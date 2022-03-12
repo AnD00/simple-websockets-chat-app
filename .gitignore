@@ -1,0 +1,8 @@
+# SAM generated directories and files
+.aws-sam
+
+# Visual Studio Code setting files
+.vscode
+
+# All build directories and log files
+**/*.DS_Store

@@ -1,0 +1,26 @@
+version = 0.1
+
+[default]
+
+[default.deploy]
+[default.deploy.parameters]
+stack_name = "simple-websockets-chat-app"
+s3_bucket = "aws-sam-cli-managed-default-samclisourcebucket-1xj859y6o8i0b"
+s3_prefix = "simple-websockets-chat-app"
+region = "ap-northeast-1"
+confirm_changeset = true
+capabilities = "CAPABILITY_IAM"
+parameter_overrides = [
+    "ApplicationName=simple-websockets-chat-app",
+    "DynamoEndpoint=\"\"",
+    "StageName=develop"
+]
+image_repositories = []
+
+[default.local_invoke]
+[default.local_invoke.parameters]
+parameter_overrides = [
+    "ApplicationName=simple-websockets-chat-app",
+    "DynamoEndpoint=http://host.docker.internal:8000",
+    "StageName=test"
+]

@@ -1,0 +1,226 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Parameters:
+  ApplicationName:
+    Type: String
+    Default: simple-websockets-chat-app
+  DynamoEndpoint:
+    Type: String
+  StageName:
+    Type: String
+
+Globals:
+  Function:
+    CodeUri: .
+    Timeout: 5
+    Tracing: Active
+    MemorySize: 512
+    Runtime: go1.x
+    Handler: bootstrap
+    Environment:
+      Variables:
+        DYNAMO_ENDPOINT: !Ref DynamoEndpoint
+        STAGE_NAME: !Ref StageName
+
+Resources:
+  ConnectFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: makefile
+    Properties:
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ConnectionsTable
+
+  DisconnectFunction:
+    Metadata:
+      BuildMethod: makefile
+    Type: AWS::Serverless::Function
+    Properties:
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ConnectionsTable
+
+  PublishFunction:
+    Metadata:
+      BuildMethod: makefile
+    Type: AWS::Serverless::Function
+    Properties:
+      Timeout: 15
+      MemorySize: 2048
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ConnectionsTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - "execute-api:ManageConnections"
+              Resource:
+                - !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${WebSocket}/*"
+
+  WebSocket:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Ref ApplicationName
+      ProtocolType: WEBSOCKET
+      RouteSelectionExpression: "$request.body.message"
+
+  Deployment:
+    Type: AWS::ApiGatewayV2::Deployment
+    DependsOn:
+      - ConnectRoute
+      - DisconnectRoute
+      - PublishRoute
+    Properties:
+      ApiId: !Ref WebSocket
+
+  Stage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      StageName: !Ref StageName
+      ApiId: !Ref WebSocket
+      DeploymentId: !Ref Deployment
+      DefaultRouteSettings:
+        LoggingLevel: INFO
+        DataTraceEnabled: true
+        DetailedMetricsEnabled: true
+
+  ConnectFunctionPermission:
+    Type: AWS::Lambda::Permission
+    DependsOn:
+      - WebSocket
+    Properties:
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      FunctionName: !Ref ConnectFunction
+
+  DisconnectFunctionPermission:
+    Type: AWS::Lambda::Permission
+    DependsOn:
+      - WebSocket
+    Properties:
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      FunctionName: !Ref DisconnectFunction
+
+  PublishFunctionPermission:
+    Type: AWS::Lambda::Permission
+    DependsOn:
+      - WebSocket
+    Properties:
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      FunctionName: !Ref PublishFunction
+
+  ConnectFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DependsOn:
+      - ConnectFunction
+    Properties:
+      RetentionInDays: 30
+      LogGroupName: !Sub /aws/lambda/${ConnectFunction}
+
+  DisconnectFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DependsOn:
+      - DisconnectFunction
+    Properties:
+      RetentionInDays: 30
+      LogGroupName: !Sub /aws/lambda/${DisconnectFunction}
+
+  PublishFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DependsOn:
+      - PublishFunction
+    Properties:
+      RetentionInDays: 30
+      LogGroupName: !Sub /aws/lambda/${PublishFunction}
+
+  ConnectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      RouteKey: $connect
+      ApiId: !Ref WebSocket
+      AuthorizationType: NONE
+      OperationName: ConnectRoute
+      Target: !Join
+        - "/"
+        - - "integrations"
+          - !Ref ConnectIntegration
+
+  DisconnectRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      RouteKey: $disconnect
+      ApiId: !Ref WebSocket
+      AuthorizationType: NONE
+      OperationName: DisconnectRoute
+      Target: !Join
+        - "/"
+        - - "integrations"
+          - !Ref DisconnectIntegration
+
+  PublishRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      RouteKey: $default
+      ApiId: !Ref WebSocket
+      AuthorizationType: NONE
+      OperationName: PublishRoute
+      Target: !Join
+        - "/"
+        - - "integrations"
+          - !Ref PublishIntegration
+
+  ConnectIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref WebSocket
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ConnectFunction.Arn}/invocations
+
+  DisconnectIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref WebSocket
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${DisconnectFunction.Arn}/invocations
+
+  PublishIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref WebSocket
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${PublishFunction.Arn}/invocations
+
+  ConnectionsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      AttributeDefinitions:
+      - AttributeName: connectionId
+        AttributeType: S
+      - AttributeName: room
+        AttributeType: S
+      KeySchema:
+      - AttributeName: connectionId
+        KeyType: HASH
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+      GlobalSecondaryIndexes:
+        - IndexName: room-index
+          KeySchema:
+            - AttributeName: room
+              KeyType: HASH
+          ProvisionedThroughput:
+            ReadCapacityUnits: 5
+            WriteCapacityUnits: 5
+          Projection:
+            ProjectionType: ALL
+      SSESpecification:
+        SSEEnabled: False
+      TableName: !Sub ${ApplicationName}-connections-${StageName}
+
+Outputs:
+  WebSocketEndpoint:
+    Value: !Sub wss://${WebSocket}.execute-api.${AWS::Region}.amazonaws.com/${StageName}/
